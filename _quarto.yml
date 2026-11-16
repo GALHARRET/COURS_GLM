@@ -1,0 +1,24 @@
+project:
+  type: book
+  output-dir: docs
+
+book:
+  title: "Modèles linéaires pour réponses qualitatives"
+  author: "J.-M. GALHARRET"
+  date: "11/23/2024"
+  chapters:
+    - index.qmd
+    - reg_logistic.qmd
+    - reg_nominal.qmd
+    - reg_ordinal.qmd
+
+bibliography: references.bib
+
+format:
+  html:
+    theme: cosmo
+  pdf:
+    documentclass: scrreprt
+
+editor: visual
+

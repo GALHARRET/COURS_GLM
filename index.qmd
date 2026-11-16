@@ -1,0 +1,9 @@
+# Introduction {.unnumbered}
+
+Dans tous les modèles logistiques la variable réponse $Y$ est de type qualitative :
+
+-   Si la réponse est binaire (0/1) on parle de modèle logistique binaire ou binomial.
+
+-   Si la réponse est nominale on parle de régression logistique polytomique ou nominale.
+
+-   Si la réponse est ordinale on parle de régression logistique ordinale.

@@ -1,0 +1,288 @@
+---
+title: "Régression Nominale"
+subtitle: "ING3-FOO'DS Science des données avancée"
+author: "J.-M. Galharret"
+date: today
+lang: fr
+format:
+  revealjs:
+    theme: oniris.scss
+    width: 1280
+    height: 720
+    margin: 0
+    center: false
+    slide-number: true
+    echo: false
+    fig.align: center
+---
+
+
+```{r}
+suppressPackageStartupMessages(suppressWarnings(
+{library(tidyverse)
+library(readxl)
+library(dplyr)
+library(gridExtra)
+library(gt)
+library(gtsummary)
+library(gridExtra)
+library(car)
+library(ggplot2)
+library(tidymodels)
+library(nnet)
+library(epitools)
+  }
+)
+)
+```
+
+
+## Exemple 
+
+On considère la base de données suivante [data_wine](data/winequality-red.csv)
+
+```{r}
+df=read.csv("data/winequality-red.csv",sep=";")
+gt_preview(df)
+```
+
+On veut prédire la qualité des vins en fonction des différentes caractéristiques biochimiques et de l'appellation considérée.
+
+
+```{r}
+df$quality=factor(df$quality,levels = c("mauvais","médiocre","moyen",
+                                        "bon","très bon","excellent"))
+df%>%select(quality)%>%tbl_summary()
+```
+
+## Variable réponse nominale
+
+- $Y$ une variable nominale dont on note $\{1,...,K\}$ les catégories.
+
+- But : prédire $Y$ à partir de variables explicatives $X=(X_1,...,X_p)$
+
+- Même idée que la régression logistique utiliser une fonction de lien telle que : 
+
+$$g(P(Y=k|X))=\beta_{0k}+...+\beta_{pk}X_p.$$
+
+## Choix de la fonction de lien
+
+-   Soit $Y$ une variable nominale dont on note $\{1,...,K\}$ les catégories. On suppose que $Y=1$ est la catégorie de référence.
+
+-   On veut prédire pour $k \not = 1$, la probabilité $\mathbb P(Y=k|X)$. On va utiliser la fonction de lien ci-dessous :
+
+$$\log\left(\frac{\mathbb P(Y=k|X)}{\mathbb P(Y=1|X)}\right)=\beta_{0k}+\beta_{k}X.$$
+
+$\leadsto$ c'est la même fonction de lien que la régression logistique mais il faut choisir une modalité de référence.
+
+## Expression de $P(Y=k|X)$
+
+En utilisant $\sum_{k=1}^K \mathbb P(Y=k|X)=1$, on obtient pour $k \not = 1$
+$$\mathbb P(Y=k|X)=\frac{\exp(\beta_{0k}+\beta_{k}X)}{1+\sum_{j=2}^K\exp(\beta_{0j}+\beta_{j}X)},$$ 
+et pour la modalité de référence on a $$\mathbb P(Y=1|X)=1-\sum_{k=2}^K\mathbb P(Y=k|X).$$
+
+### Notion de Risque Relatif (RR)
+
+::: {.callout-note title="Risque relatif"}
+Le risque relatif (RR) mesure le risque de survenue d'un événement dans un groupe par rapport à un autre : $RR=\dfrac{\mathbb P(\text{événement}|\text{groupe 1})}{\mathbb P(\text{événement}|\text{groupe 2})}$.
+:::
+
+C'est une mesure statistique très utilisée en épidémiologie par exemple pour la survenue d'un événement entre deux groupes.
+
+## Exemple 
+
+On veut calculer le risque relatif d'avoir un vin de bonne qualité dans le groupe AOP par rapport au groupe non AOP :
+$RR=\dfrac{P(Q=bon|appelation=AOP)}{P(Q=bon|appelation=nonAOP)}.$
+
+```{r}
+df%>%select(quality,appelation)%>%tbl_cross(percent = "column")
+rr=(sum(df$quality=="bon" & df$appelation=="AOP")/sum(df$appelation=="AOP"))/(sum(df$quality=="bon" & df$appelation=="non AOP")/sum(df$appelation=="non AOP"))
+```
+
+
+
+Donc, il est plus probable d'être dans la catégorie bon lorsque le vin est de type non AOP (`1/rr` fois plus probable).
+
+## Modèle à une variable explicative qualitative
+
+On va estimer les paramètres du modèle prédisant la qualité du vin en fonction de l'appelation considérée :
+
+```{r echo=T,warning=F}
+mod<-multinom(quality~appelation,data=df)
+car::Anova(mod)
+mod |>
+  tbl_regression(intercept=T) 
+```
+
+Le lien entre l'appelation du vin et sa qualité est significatif (test de déviance, fonction Anova).
+
+## Interprétation des coefficients du modèle :
+
+La modalité de référence pour l'appellation des vins dans ce modèle correspond aux vins AOP (première modalité dans l'ordre alphabétique).
+
+On peut écrire par exemple le modèle pour la qualité médiocre de vin : $\log\left(\frac{\mathbb P(Y=médiocre|appelation)}{\mathbb P(Y=mauvais|appelation)}\right)=1.2+0.84\times 1_{appelation=nonAOP}.$
+
+Pour les vins AOP on retrouve $e^{1.2}\approx 16/5$ (table de contingence).
+
+-   Pour les vins AOP :
+
+```{r}
+predict(mod,newdata=data.frame("appelation"="AOP"),
+        type="probs")
+```
+
+Pour les vins non AOP :
+
+```{r}
+predict(mod,newdata=data.frame("appelation"="non AOP"),
+        type="probs")
+```
+
+On calcule les risques relatifs
+
+```{r}
+RR=predict(mod,newdata=data.frame("appelation"="non AOP"),
+        type="probs")/predict(mod,newdata=data.frame("appelation"="AOP"),
+        type="probs")
+tab=data.frame(quality=names(RR),RR=RR)
+tab |> gt()
+```
+
+On retrouve, pour la qualité bon, l'inverse du RR calculé à partir de la table de contingence : $RR_{nonAOP/AOP}=1/RR_{AOP/nonAOP}$ (le modèle ne contenant qu'un facteur, les probabilités prédites sont exactement les fréquences observées).
+
+On calcule les quotients des risques relatifs (ORR, que l'on trouve aussi sous le nom de *relative risk ratio*) et on retrouve $e^{\beta_k}$ pour tout $k\not =1$ : $$e^{\beta_k}=\frac{\mathbb P(Y=k|nonAOP)/\mathbb P(Y=k|AOP)}{\mathbb P(Y=1|nonAOP)/\mathbb P(Y=1|AOP)}.$$
+
+```{r}
+Q=RR[2:6]/RR[1]
+tab=data.frame(quality=names(Q),Q=Q)
+tab |> gt()
+```
+
+::: {.callout-note title="Interprétation de $\\beta_k$"}
+-   Lorsque $e^{\beta_k}<1$ le risque relatif de $Y=k$ est moins important que celui de $Y=1$.
+
+-   Lorsque $e^{\beta_k}>1$ le risque relatif de $Y=k$ est plus important que celui de $Y=1$.
+:::
+
+Ce qui donne :
+
+Le risque relatif d'être de qualité bon entre un vin non AOP et un vin AOP est significativement plus important que le risque relatif d'être mauvais entre un vin non AOP et un vin AOP (ORR = `r round(exp(coef(mod)["bon",2]),2)`).
+
+Tous les coefficients en ORR (la colonne est intitulée OR par gtsummary) :
+
+```{r}
+mod |>
+  tbl_regression(exponentiate=T)
+```
+
+
+## Modèle à une variable explicative quantitative
+
+```{r echo=T,warning=F}
+mod<-multinom(quality~alcohol,data=df)
+car::Anova(mod)
+```
+
+Le lien entre le taux d'alcool et la qualité du vin est significatif.
+
+Pour les coefficients, on a :
+
+```{r}
+mod %>%
+  tbl_regression(exponentiate=T)
+```
+
+### Interprétation des $\beta_k$
+
+Le risque relatif qu'un vin soit bon lorsqu'il fait 10 degrés plutôt que 9 degrés est significativement supérieur à celui qu'un vin soit mauvais lorsqu'il fait 10 degrés plutôt que 9 ($ORR=2.36,p=.045$). Pour une variable quantitative, $e^{\beta_k}$ est l'ORR associé à une augmentation d'une unité (ici 1 degré), quelle que soit la valeur de départ.
+
+```{r}
+p10=predict(mod,newdata=data.frame("alcohol"=10),type="probs")
+p9=predict(mod,newdata=data.frame("alcohol"=9),type="probs")
+RR=p10/p9
+ORR=RR[2:6]/RR[1]
+tab=data.frame("alcool=10°"=p10,"alcool=9°"=p9,"Risque relatif"=RR,"ORR"=c(NA,ORR))
+tab |> gt()
+```
+
+## Qualité du modèle nominal
+
+On construit dans un premier temps un modèle avec comme variables explicatives taux d'alcool et appellation :
+
+```{r}
+mod=multinom(quality~appelation+alcohol,data=df)
+```
+
+-   Matrice de confusion :
+
+```{r}
+tab<-data.frame(obs=as.factor(df$quality),pred=as.factor(predict(mod)))
+tab |> tbl_cross()
+```
+
+-   Pourcentage de bien classés :
+
+```{r eval=F}
+tab |> accuracy(obs,pred)
+```
+
+On peut aussi définir la notion de % de bien classés pour chaque modalité de $Y$ (c'est la sensibilité de la modalité $k$) : 
+$$
+\frac{\#(\hat Y=k,Y=k)}{\#(Y=k)}
+$$
+
+```{r eval=F}
+tab |> group_by(df$quality) |>
+  accuracy(obs,pred)
+```
+
+Les catégories sur lesquelles le modèle n'est pas du tout adapté sont les deux premières et la dernière. Quelle raison peut-on invoquer ?
+
+## La régression nominale en machine learning :
+
+```{r}
+library(tidymodels)
+set.seed("4485") # pour avoir les mêmes échantillons
+df$ID=1:dim(df)[1]
+choice_split <- group_initial_split(data = df,group=ID,strata=quality)
+train_data <- training(choice_split)
+train_data |>
+  select(quality) |>
+  mutate(quality=as.factor(quality)) |>
+  tbl_summary()
+test_data <- testing(choice_split)
+test_data |>
+  select(quality) |>
+  mutate(quality=as.factor(quality)) |>
+  tbl_summary()
+```
+
+### Estimation du modèle sur le training :
+
+On estime le modèle sur l'échantillon d'apprentissage :
+
+```{r}
+mod=multinom(quality~.,data=train_data|>select(-ID),maxit=1000)
+Anova(mod)
+pred<-predict(mod)
+tab=data.frame(obs=as.factor(train_data$quality),pred=as.factor(pred))
+tab|>accuracy(obs,pred)
+tab|>
+  group_by(train_data$quality) |>
+  accuracy(obs,pred) |>
+  gt()
+```
+
+### Evaluation de la qualité du modèle sur le test :
+
+On évalue ensuite la qualité de prédiction sur les données de test du modèle précédent :
+
+```{r}
+pred<-predict(mod,newdata = test_data)
+tab=data.frame(obs=as.factor(test_data$quality),pred=as.factor(pred))
+tab|>accuracy(obs,pred)
+tab|>
+  group_by(test_data$quality) |>
+  accuracy(obs,pred) |>
+  gt()
+```

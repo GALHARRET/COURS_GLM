@@ -1,0 +1,495 @@
+# La régression logistique
+
+```{r}
+suppressPackageStartupMessages(
+  {library(tidyverse)
+library(readxl)
+library(MASS)
+library(dplyr)
+library(gridExtra)
+library(RColorBrewer)
+library(gt)    
+library(gtsummary)
+library(GGally)
+library(gridExtra)
+library(car)
+library(ggplot2)
+library(tidymodels)
+  }
+)
+
+```
+
+La variable réponse $Y$ à deux modalités 0 ou 1, on considère $X=(X_1,X_2,\ldots,X_p)$ un vecteur de p variables explicatives (qui peuvent être qualitatives ou quantitatives) et on veut modéliser $$\mathfrak p=P(Y=1|X) $$ d'où on déduira $P(Y=0|X)=1-\mathfrak p$.
+
+On a la contrainte $\mathfrak p\in[0,1]$ donc on ne peut pas utiliser directement une régression linéaire de $p$ sur $X$, c'est à dire on ne peut pas écrire $\mathfrak p=\beta_0+\beta_1 X_1+...\beta_p X_P.$
+
+L'idée est de trouver une fonction $g$ qui sera strictement monotone et continue définie de $[0,1]$ dans $\mathbb R$ telle que $$g(\mathfrak p)=\beta_0+\beta_1 X_1+...\beta_p X_P,$$ une telle fonction s'appelle une fonction de lien.
+
+## La fonction logistique
+
+La fonction logistique (***logit***) définie par $$\text{logit}(\mathfrak p)=\log(\frac{\mathfrak p}{1-\mathfrak p}),$$ est une solution au problème précédent.
+
+Dans notre problème il faut calculer la fonction réciproque de $g$ c'est à dire trouver la fonction $h$ telle que $g(\mathfrak p)=\beta_0+\beta_1 X_1+...\beta_pX_P$ est équivalent à $\mathfrak p=h(\beta_0+\beta_1 X_1+...\beta_pX_P).$
+
+La fonction réciproque de la fonction logistique est la fonction $h$  définie par : $$h(x)=\frac{1}{1+e^{-x}}.$$ 
+
+On donne ci-dessous la représentation graphique de la fonction $\dfrac{1}{1+e^{-\beta x}}$ pour différentes valeurs de $\beta$ et pour $x\in \mathbb R$.
+
+```{r fig.height=4}
+expit<-function(x) 1/(1+exp(-x))
+x=seq(-10,10,by=.1)
+df=data.frame(x=rep(x,4),
+              b=c(rep(1,length(x)),rep(.5,length(x)),rep(2,length(x)),rep(-2,length(x))),
+              p=c(expit(x),expit(.5*x),expit(2*x),expit(-2*x))
+)
+
+df$b=factor(df$b)
+
+ggplot(df,aes(x=x,group=b,color=b,y=p))+
+  geom_line()+
+  theme_minimal()+
+  labs(title=paste("Représentation de la fonction"))
+  
+
+```
+
+## Exemple :
+
+Les données sont disponibles [ici](data/data_RL.csv). On a interrogé des consommateurs si ils accepteraient de faire une semaine VEGAN (variable choice 1 pour OUI et 0 pour NON).
+
+```{r}
+data<-read.csv("data/data_RL.csv",sep=",",row.names = 1)
+gt_preview(data,top_n = 5,bottom=5,incl_rownums = T)
+```
+
+
+Les variables explicatives que nous considèrerons dans le modèle sont :
+
+- Facteurs :Gender,Education
+
+- Variables quantitatives : a_meat (proportion de repas avec de la viande), a_fish (proportion de repas avec du poisson), a_dairy (proportion de repas avec des produits laitiers), a_eggs (proportion de repas avec des oeufs).
+
+## Modèle à 1 variable explicative binaire
+
+On s'intéresse au lien entre le choix concernant la semaine vegan et le genre du répondant. 
+
+On peut répondre à cette question en utilisant le test du $\chi^2$.
+
+```{r}
+data |> 
+  select(choice,gender) |> 
+  tbl_cross() |>
+  add_p(source_note=T)
+```
+
+
+
+```{r}
+ggplot(data,aes(x=factor(choice),group=factor(gender),fill=factor(gender)))+
+  geom_bar(position="fill")+ xlab("Choice")
+```
+
+La synthaxe pour une régression logistique est la fonction glm (generalized linear model) de R pour indiquer le choix de la fonction logistique pour le lien $g$ on utilise family="binomial".
+
+```{r}
+mod<-glm(choice~gender,data=data,family="binomial")
+mod |>
+  tbl_regression() 
+```
+
+Donc on peut écrire $\widehat{P}(Choix=1|Gender)=\frac 1{1+e^{-(\beta_0+\beta_1\times 1_{Gender=M})}}$ où $\beta_0=$`r round(coef(mod)[1],1)` et $\beta_1=$`r round(coef(mod)[2],1)`.
+
+On en déduit que :
+
+- La probabilité de choisir le repas vegan sachant qu'on est une femme  est égale à $1/(1+e^{-\beta_0})=$`r round(as.numeric(expit(coef(mod)[1])),3)`,
+
+- La probabilité de choisir le repas vegan sachant qu'on est un homme est $1/(1+e^{-(\beta_0+\beta_1)})=$`r round(as.numeric(expit(coef(mod)[1]+coef(mod)[2])),3)`.
+
+On peut utiliser la fonction predict de R pour trouver ces deux quantités :
+
+```{r eval=F}
+predict(mod,newdata = data.frame(gender="Female"),type = "response")
+predict(mod,newdata = data.frame(gender="Male"),type = "response")
+```
+
+***Remarque :***
+Ces valeurs sont cohérentes avec le tableau de contingence si on calcule la probabilité de choisir le repas vegan sachant qu'on est une femme : 162/(162+178) ou qu'on est un homme : 67/(67+55).
+
+
+### Odds (cotes) et Odds ratios
+
+OR (Odds Ratio) signifie rapport de cotes. 
+
+
+Pour comprendre cette notion on considère les paris sportifs : par exemple admettons que l'on a 3 chevaux A,B,C au départ d'une course. On note $G$ le gagnant de la course.
+
+-   si on considère que A a 2 chances sur 3 de gagner (i.e. $p_{G=A}=\frac{2}{3}$) la cote de A est $$Odds_A=\frac{p_{G=A}}{1-p_{G=A}}=2,$$ le cheval A a une cote de 2 contre 1, c'est à dire que A a 2 fois plus de chance de gagner que de perdre.
+
+-   si pour le cheval B on a $p_{G=B}=1/6$, alors $Odds_B=\frac{1/6}{5/6}=\frac{1}{5}$, le cheval B a cinq fois plus de chance de perdre que de gagner.
+
+- Faire de même pour le cheval C.
+
+Revenons à l'exemple du choix du repas vegan :
+
+- quelle est la cote du choix vegan chez les femmes ? chez les hommes ?
+
+Il existe un lien naturel (du fait de la fonction logistique) entre les coefficients du modèle et les cotes : un simple calcul permet d'obtenir :
+
+- $Odds_{choix=1|gender=F}=e^\beta_0$,
+
+- $Odds_{choix=1|gender=M}=e^{\beta_0+\beta_1}$.
+
+On peut vérifier qu'on trouve les mêmes résultats qu'avec le tableau de contingence.
+
+
+::: {.callout-note}
+
+### Odds Ratio (rapport de cotes)
+
+On définit le rapport de cotes entre les deux évenements A et B : $$OR_{A/B}=\frac{Odds_A}{ Odds_B}=\frac{p_A/(1-p_A)}{p_B/(1-p_B)}.$$
+:::
+
+
+Retour sur l'exemple précédent : $OR_{A/B}=10$, la cote du cheval A est 10 fois plus grande que celle de B. De même calculer le rapport de cotes de B par rapport à C.
+
+Remarque : On a $OR_{B/A}=\frac{1}{OR_{A/B}}.$
+
+### Coefficients et OR
+
+D'après les calculs précédents, on a 
+
+$$
+OR_{(Choice=1|Gender=F)/(Choice=1|Gender=M)}=e^{-\beta_1}.
+$$
+
+Donc, dans l'exemple, la cote de choisir un repas vegan chez les femmes est égale à `r exp(-coef(mod)[2])` fois celle des hommes. 
+
+En fait les valeurs des OR ne sont pas très importantes à interpréter, ce qui compte c'est :
+
+::: {.callout-note}
+
+## Interprétation OR
+-   si $OR=1$ pas de lien entre la variable explicative $X$ et la probabilité $P(Y=1|X),$
+
+-   si $OR>1$ lien positif entre la variable explicative $X$ et la probabilité $P(Y=1|X),$
+
+-   si $OR<1$ lien négatif entre la variable explicative $X$ et la probabilité $P(Y=1|X),$ il sera plus facile d'utiliser $1/OR$ pour l'interprétation.
+:::
+
+
+## Modèle à 1 variable explicative catégorielle
+
+On regarde par exemple le lien avec la variable income (niveau de salaire)  qui est catégorielle à 5 modalités.
+
+On peut comme précédememnt utiliser un test du $\chi^2$ pour répondre à cette question :
+
+```{r}
+data |>
+  select(choice,clusters) |>
+  tbl_cross() |>
+  add_p(source_note=T)
+```
+
+
+```{r}
+ggplot(data,aes(x=factor(choice),group=clusters,fill=clusters))+geom_bar(position="fill")+theme_minimal()
+```
+
+
+
+```{r}
+mod<-glm(choice~clusters,data=data,family="binomial")
+```
+
+La fonction anova() permet de retrouver un résultat très proche de celui du test du $\chi^2$, il s'agit du test de ***déviance*** :
+
+```{r}
+car::Anova(mod)
+```
+
+La fonction summary permet d'obtenir les valeurs des coefficients ainsi que leur significativité :
+
+```{r}
+tbl_regression(mod)
+```
+
+Comme précédemment on écrit $\widehat{P}(choice=1|clusters)=\frac 1{1+e^{-(\beta_0+\beta_1\times 1_{clusters=HA}+\beta_2\times 1_{clusters=HD} +\beta_3\times 1_{clusters=HM})}}$ où les coefficients $\beta_j$ sont donnés précédemement.
+
+Les résultats précédents s'appliquent directement : pour calculer la probabilité de choisir le repas végan sachant qu'on mange beaucoup de viandes est :
+
+```{r}
+predict(mod,newdata = data.frame(clusters="High Meat"),type="response")
+```
+
+ce qui est cohérent avec la table de contingence : 19/(29+19).
+
+- La cote du repas végan dans la catégorie High All est $e^{\beta_0+\beta_1}=$ `r round(exp(sum(coef(mod)[1:2])),1)` qui est elle aussi cohérente avec la table de contingence : 77/47
+
+- La cote du repas végan dans la catégorie Low All est $e^{\beta_0}=$ `r round(exp(coef(mod)[1]),1)`  (table de contingence : 60/10)
+
+Là encore peut calculer les OR de chaque catégorie par rapport à la catégorie de référence (Low All)
+
+```{r}
+tbl_regression(mod,exponentiate=T)
+```
+On peut déduire de ces résultats que les cotes de choisir le repas végan lorsque l'on appartient à la catégorie HA, HD ou HM est significativement inférieure à celle de LA.
+
+- Pour tester des rapports de cotes tels que la cote de choisir le repas végan pour le cluster HA par rapport à celle de HD.
+Cet OR peut se déduire des coefficients précédents : $OR_{HA/HD}=OR_{HA}/OR_{HD}=e^{\beta_{HA}-\beta_{HD}}=$ `r round(exp(coef(mod)[2]-coef(mod)[3]),2)`
+
+### Test de déviance 
+
+Pour tester l'effet du facteur clusters il faut tester si l'ensemble des coefficients précédents est nul, $H_0:\beta_1=...=\beta_{J-1}=0$ où $J$ est le nombre de niveau du facteur considéré $\leadsto$ c'est le test de déviance vu précédemment.
+
+```{r}
+car::Anova(mod)
+```
+
+Le résultat indique qu'au moins l'un des coefficients est significativement différent de 0. 
+
+## Modèle à 1 variable explicative quantitative
+
+On regarde les liens entre le fait de choisir le régime végan et l'âge :
+
+```{r}
+ggplot(data,aes(x=factor(choice),y=age))+
+  geom_boxplot()+
+  geom_jitter(width=.05)+
+  geom_hline(yintercept = mean(data$age),linetype="dashed",color="red")+
+  theme_minimal()
+```
+On peut faire un test de Student :
+
+```{r}
+t.test(age~choice,data=data)
+```
+Il existe donc un lien entre le fait de choisir le repas végan et l'âge. L'âge moyen des participants choisissant le repas végan ($M=29.4$) est significativement inférieur à celui qui ne le choisisse pas ($M=39.7$).
+
+
+Retour au modèle logistique :
+
+```{r}
+mod=glm(choice~age,data=data)
+tbl_regression(mod)
+```
+
+Donc on peut écrire $\widehat{P}(choice=1|age)=\frac 1{1+e^{-(0.815-0.0144\times age)}}$.
+
+Plus l'âge augmente, plus la probabilité de choisir le repas végan diminue, ce qui est cohérent avec le résultat du test de Student. 
+
+Par exemple un individu tel que $age=50$  a 23.5% de chance de choisir un repas végan.
+
+```{r}
+predict(mod,newdata=list(age=50),type="response")
+```
+
+De plus, si on reprend les moyennes d'âge des deux groupes (choice=0 et choice=1), les résultats sont cohérents avec le test de Student.
+
+```{r}
+predict(mod,newdata=list(age=29.4),type="response")
+predict(mod,newdata=list(age=39.7),type="response")
+```
+
+## Modèle multivarié : plusieurs variables explicatives
+
+On considère le modèle contenant les trois variables précédentes.
+
+```{r}
+mod=glm(choice~gender+clusters+age,data=data)
+car::Anova(mod)
+```
+
+Le test de déviance est dans ce cas un test sur des modèles emboités : chaque ligne du résultat précédent teste la significativité de l'ajout d'une nouvelle variable dans le modèle. Par exemple, la deuxième ligne indique que l'ajout de la variable clusters au modèle contenant gender permet de prédire significativement mieux la variable choix.
+
+```{r}
+tbl_regression(mod,exponentiate=T)
+```
+
+
+
+On peut en conclure que :
+
+- La probabilité de choisir le repas végan pour un homme est significativement inférieur à celui d'une femme (OR=1/0.9=1.11), ($\leadsto$ 11.1% de chance suplémentaire pour les femmes).
+
+- La probabilité de choisir le repas végan diminue significativement avec l'âge (toutes choses par ailleurs égales, c'est à dire pour des participants de même gendre, ayant le même niveau de salaire).
+
+
+## Evaluation de la qualité du modèle logistique
+
+### Prédiction/ matrice de confusion
+
+-   Le modèle étant ajusté on obtient $\widehat{P}(Y_i=1|X_{i1},...X_{ip})$ pour chaque individu $i$. Il reste à donner un seuil $s$ pour déterminer $\widehat{Y}_i$, c'est à dire 
+$$
+    \widehat{Y}_i=\begin{cases}
+    1 \ \text{si } \widehat{\mathfrak p}_i\geq s \\
+    0 \ \text{sinon}
+    \end{cases},
+$$ 
+
+Le choix usuel est  $s=0.50$.
+
+-   Ceci donne la matrice de confusion
+
+```{=tex}
+\begin{tabular}{c|cc}
+\hline
+ & $\widehat{Y}=0$ & $\widehat{Y}=1$ \\
+\hline 
+$Y=0$ & & \textbf{Erreur} \\
+$Y=1$ &\textbf{Erreur} & \\
+\hline
+\end{tabular}
+```
+
+### Sensibilité / Spécificité
+
+```{=tex}
+\begin{tabular}{c|cc|c}
+\hline
+ & $\widehat{Y}=0$ & $\widehat{Y}=1$ & $\Sigma$   \\
+\hline 
+$Y=0$ & VN & FP & N \\
+$Y=1$ & FN & VP & P \\
+\hline
+\end{tabular}
+```
+
+-   la sensibilité du modèle : capacité à bien identifier les individus positifs, c'est à dire la proportion de vrais positifs $$Se=\frac{\#(\widehat{Y}=1,Y=1)}{\#(Y=1)}=\frac{VP}{P}=1-\frac{FN}{P}.$$
+
+-   la spécificité du modèle : capacité à bien identifier les individus négatifs, c'est à dire les vrais négatifs $$\frac{\#(\widehat{Y}=0,Y=0)}{\#(Y=0)}=\frac{VN}{N}=1-\frac{FP}{N}.$$
+
+Dans l'exemple :
+
+```{r echo=T}
+prob<-predict(mod,newdata = data,type="response")
+Ypred<-as.numeric(prob>.5)
+Yobs=data$choice
+df=data.frame(Yobs=as.factor(Yobs),Ypred=as.factor(Ypred))
+df |>
+  tbl_cross()
+
+df|>accuracy(Yobs,Ypred)
+df|>sens(Yobs,Ypred)
+df|>spec(Yobs,Ypred)
+```
+
+
+### Courbe ROC
+
+On va représenter le taux de vrais positifs (sensibilité) en fonction du taux de faux positifs (1-spécificité) pour différentes valeurs du seuil $s$ entre 0 et 1 :
+
+
+```{r}
+s<-seq(0,1,by=.001)
+sensib<-rep(0,length(s))
+specif<-rep(0,length(s))
+
+for(i in 1:length(s)){
+Ypred<-as.numeric(prob>s[i])
+sensib[i]<-sum(Yobs==1 & Ypred==1)/sum(Yobs==1)
+specif[i]<-sum(Yobs==0 & Ypred==0)/sum(Yobs==0)  
+}
+
+roc=data.frame(x=s,sensib=sensib,specif=specif,spec2=1-specif)
+ggplot(roc,aes(x=s,y=sensib))+
+  geom_line(color="red")+
+  geom_line(aes(x=s,y=specif),color="yellow")+
+  theme_minimal()+
+  ylab("probabilité")
+```
+
+
+### AUC
+
+Il s'agit de l'aire entre la courbe ROC et la première bissectrice. Plus cette aire est proche de 1 meilleur est le modèle.
+
+```{r echo=T,eval=T}
+library(pROC)
+roc_objet<-roc(data$choice,prob)
+plot.roc(roc_objet)
+auc(roc_objet)
+```
+
+
+## La régression logistique en apprentissage statistique 
+
+On va tester l'ensemble des variables pour prédire la variable choice.
+Pour simplifier les variables ordinales sont considérées comme des variables quantitatives.
+
+### Principe de l'évalution d'un modèle 
+
+En général on évalue la qualité du modèle sur des données qui n'ont pas servies à l'estimer : l'échantillon initial est donc décomposé en deux sous échantillons :
+
+- échantillon d'apprentissage ( par exemple 3/4 des observations)
+
+- échantillon de test (par exemple 1/4 des observations)
+
+Par contre ici on veut modéliser la variable choice dont il est important que ces deux échantillons respectent bien la proportion initiale des deux modalités de choice : 
+
+```{r}
+data |>
+  select(choice) |>
+  mutate(choice=as.factor(choice)) |>
+  tbl_summary()
+```
+
+Le package tidymodels offre de très nombreuses fonctionnalités permettant d'estimer et de tester des modèles (linéaires, random forest, ...)
+
+```{r}
+library(tidymodels)
+set.seed("4485") # pour avoir les mêmes échantillons
+choice_split <- group_initial_split(data = data,group=ID,strata=choice)
+train_data <- training(choice_split)
+train_data |>
+  select(choice) |>
+  mutate(choice=as.factor(choice)) |>
+  tbl_summary()
+test_data <- testing(choice_split)
+test_data |>
+  select(choice) |>
+  mutate(choice=as.factor(choice)) |>
+  tbl_summary()
+```
+
+### Estimation du modèle sur le training :
+
+On va construire un premier modèle avec les variables : `r colnames(data)[c(2,4,5,9,10)]`
+
+
+On estime le modèle sur l'échantillon d'apprentissage :
+
+```{r}
+mod=glm(choice~.,data=train_data|>select(gender:choice),family="binomial")
+mod |>
+  tbl_regression(exponentiate = T)
+prob<-predict(mod,type="response")
+Ypred<-as.numeric(prob>.5)
+Yobs=train_data$choice
+df=data.frame(Yobs=as.factor(Yobs),Ypred=as.factor(Ypred))
+df|>accuracy(Yobs,Ypred)
+df|>sens(Yobs,Ypred)
+df|>spec(Yobs,Ypred)
+```
+
+
+### Evaluation de la qualité du modèle sur le test :
+
+On évalue ensuite la qualité de prédiction sur les données de test du modèle précédent :
+
+```{r}
+prob<-predict(mod,newdata = test_data,type="response")
+Ypred<-as.numeric(prob>.5)
+Yobs=test_data$choice
+df=data.frame(Yobs=as.factor(Yobs),Ypred=as.factor(Ypred))
+df|>accuracy(Yobs,Ypred)
+df|>sens(Yobs,Ypred)
+df|>spec(Yobs,Ypred)
+```
+
+
+
+
+
+
+

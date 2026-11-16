@@ -1,0 +1,287 @@
+# La régression ordinale
+
+```{r}
+suppressPackageStartupMessages(
+  {library(tidyverse)
+library(tinytable)
+library(readxl)
+library(dplyr)
+library(gridExtra)
+library(gt)
+library(gtsummary)
+library(gridExtra)
+library(car)
+library(ggplot2)
+library(tidymodels)
+library(nnet)
+  }
+)
+df=as.data.frame(read.csv("data/winequality-red.csv",sep=";"))
+```
+
+Dans ce chapitre la variable réponse $Y$ est ordinale (c'est-à-dire que ses modalités peuvent être ordonnées). $\leadsto$ exemple échelle de Likert dans un questionnaire consommateur.
+
+## Modélisation
+
+-   Le modèle le plus utilisé est le modèle à rapports de cotes proportionnels (*proportional odds model*, ou modèle à pentes constantes).
+
+-   Pour modéliser le caractère ordinal de $Y$ on va modéliser les probabilités cumulées plutôt que les probabilités de chaque catégorie, c'est-à-dire que l'on modélise $\mathbb P(Y \leq k)$ au lieu de $\mathbb P(Y = k)$
+
+***Exemple de la qualité des vins***
+
+```{r}
+df$quality=factor(df$quality,levels = c("mauvais","médiocre","moyen",
+                                        "bon","très bon","excellent"))
+df%>%select(quality)%>%tbl_summary()
+tab=data.frame(
+  Modalité=paste("<=",levels(df$quality),sep=" "),
+  Effectif=cumsum(table(df$quality)),
+  Pourcentage=round(100*cumsum(table(df$quality))/dim(df)[1],1))
+tab |> gt()
+```
+
+Soit $X$ une variable explicative. On a $\mathbb P(Y\leq K|X)=1$. Dans la régression ordinale, on modélise :
+
+-   $\mathbb P(Y\leq 1|X),...,\mathbb P(Y\leq K-1|X)$ et
+
+-   on en déduit la dernière catégorie : $\mathbb P(Y=K|X)=1-\mathbb P(Y\leq K-1|X)$.
+
+On écrit pour $k \leq K-1$ $$\log\left(\frac{\mathbb P(Y\leq k|X)}{1-\mathbb P(Y\leq k|X)}\right)=\alpha_k-\beta X.$$ $\leadsto$ on utilise la même pente $\beta$ et un intercept (seuil) $\alpha_k$ différent pour chaque modalité de $Y$. C'est la paramétrisation utilisée par `MASS::polr` (attention au signe moins : $\beta>0$ signifie que $X$ est associé à des modalités plus élevées de $Y$).
+
+$\leadsto$ on revient sur la notion de cotes (comme pour la régression logistique) : on calcule la cote d'être inférieur ou égal à une modalité versus être strictement supérieur à celle-ci.
+
+***Remarque :*** Pour garantir le caractère cumulatif de la modélisation on aura $\alpha_1<...<\alpha_{K-1}.$
+
+### Calcul des probabilités des catégories :
+
+De l'écriture précédente on déduit : $\mathbb P(Y\leq k|X)=\dfrac{e^{\alpha_k-\beta X}}{1+e^{\alpha_k-\beta X}}.$ Ceci nous permet d'en déduire les probabilités des catégories :
+
+-   Pour $1\leq k\leq K-1$ (avec la convention $\alpha_0=-\infty$, c'est-à-dire $\mathbb P(Y\leq 0|X)=0$), $\mathbb P(Y=k|X)=\dfrac{e^{\alpha_k-\beta X}}{1+e^{\alpha_k-\beta X}}-\dfrac{e^{\alpha_{k-1}-\beta X}}{1+e^{\alpha_{k-1}-\beta X}},$
+
+-   $\mathbb P(Y=K|X)=1-\dfrac{e^{\alpha_{K-1}-\beta X}}{1+e^{\alpha_{K-1}-\beta X}}.$
+
+## Modélisation incluant une seule variable explicative qualitative
+
+On étudie le lien entre les probabilités cumulées de la qualité du vin et l'appelation considérée :
+
+Pour AOP :
+
+```{r}
+df1=df |> filter(appelation=="AOP")
+tab=data.frame(
+  Modalité=paste("<=",levels(df1$quality),sep=" "),
+  Effectif=cumsum(table(df1$quality)),
+  Pourcentage=round(100*cumsum(table(df1$quality))/dim(df1)[1],1))
+tab |> gt()
+```
+
+```{r}
+df$appelation=factor(df$appelation)
+mod0<-MASS::polr(quality ~appelation, data = df)
+car::Anova(mod0)
+```
+
+Comme précédemment on utilise la déviance pour tester la significativité du lien entre la qualité et l'appelation.
+
+### Estimation des coefficients du modèle :
+
+```{r}
+mod0
+```
+
+
+Donc le coefficient commun est $\beta=$ `r round(mod0$coef,2)` pour l'appelation non AOP et l'intercept associé à $\mathbb P(Y\leq bon)$ est $\alpha_{bon}=$ `r round(mod0$zeta[4],2)` (seuil « bon|très bon » dans la sortie de R).
+
+
+### Probabilités des catégories et cotes
+
+Si on veut les probabilités des catégories évidemment on peut utiliser les résultats précédents ou bien faire beaucoup plus simple sur R :
+
+```{r echo=T}
+pAOP=predict(mod0,newdata = data.frame(appelation="AOP"),type = "probs")
+print(pAOP)
+```
+
+et de même pour non AOP
+
+```{r echo=T}
+pNAOP=predict(mod0,newdata = data.frame(appelation="non AOP"),type = "probs")
+print(pNAOP)
+```
+
+Calculons les OR (AOP / non AOP) des probabilités cumulées $\mathbb P(Y\leq moyen)$ et $\mathbb P(Y\leq bon)$ :
+
+```{r}
+(sum(pAOP[1:3])/(1-sum(pAOP[1:3])))/(sum(pNAOP[1:3])/(1-sum(pNAOP[1:3])))
+(sum(pAOP[1:4])/(1-sum(pAOP[1:4])))/(sum(pNAOP[1:4])/(1-sum(pNAOP[1:4])))
+```
+
+
+Chez les vins AOP, la cote d'une qualité inférieure ou égale à bon (par rapport aux autres : très bon et excellent) est égale à $e^{\beta}=$ `r round(exp(mod0$coef),2)` fois celle chez les vins non AOP : $$OR_{AOP/nonAOP}=\frac{e^{\alpha_{bon}}}{e^{\alpha_{bon}-\beta}}=e^{\beta}.$$
+Donc pour un vin AOP la cote d'être de qualité inférieure ou égale à bon est `r round(1/exp(mod0$coef),2)` fois plus faible que pour un vin non AOP.
+
+Ceci est vrai pour toutes les probabilités cumulées (modèle à pentes constantes) : on retrouve la même valeur pour $\mathbb P(Y\leq moyen)$ ci-dessus.
+
+
+
+### Interprétation de $\beta$
+
+$e^{\beta}=$ `r round(exp(mod0$coef),2)` est l'OR (non AOP / AOP) d'être dans une catégorie **strictement supérieure** à $k$, et il est le même pour tous les seuils $k$. Comme $\beta<0$, quel que soit le seuil, la cote d'un vin non AOP d'être dans une catégorie supérieure est plus faible que celle d'un vin AOP : un vin AOP a une cote `r round(exp(-mod0$coef),2)` fois plus grande d'être dans une catégorie supérieure.
+
+## Modélisation incluant une seule variable explicative quantitative
+
+On modélise la qualité en fonction du taux d'alcool :
+
+```{r}
+mod0<-MASS::polr(quality ~alcohol, data = df)
+```
+
+```{r}
+car::Anova(mod0)
+```
+
+Comme précédemment on utilise la déviance pour tester la significativité du lien entre la qualité et le taux d'alcool.
+
+### Estimation des coefficients :
+
+```{r}
+mod0
+```
+
+Donc le coefficient de alcohol est $\beta=$ `r round(mod0$coef,2)` et l'intercept associé à $\mathbb P(Y\leq bon)$ est $\alpha_{bon}=$ `r round(mod0$zeta[4],2)`.
+
+
+### Interprétation de $\beta$
+
+On veut comparer deux vins qui diffèrent d'un degré d'alcool (par exemple 14° versus 13°).
+
+Les probabilités prédites 
+
+```{r}
+p13=predict(mod0,newdata=data.frame(alcohol=13),type="probs")
+p14=predict(mod0,newdata=data.frame(alcohol=14),type="probs")
+print(p13)
+print(p14)
+```
+```{r}
+OR=(sum(p13[1:4])/(1-sum(p13[1:4])))/(sum(p14[1:4])/(1-sum(p14[1:4])))
+print(OR)
+```
+
+
+On en déduit : pour un vin de 13° la cote d'être de qualité inférieure ou égale à bon est `r round(OR,2)` fois plus importante que celle pour un vin de 14°. Autrement dit, chaque degré d'alcool supplémentaire multiplie par $e^\beta$ la cote d'être dans une catégorie supérieure.
+
+On retrouve $e^\beta$ :
+
+```{r}
+exp(mod0$coefficients)
+```
+
+
+
+## Régression ordinale vs nominale
+
+```{r}
+predict(mod0,newdata=data.frame('alcohol'=10),type="probs")
+```
+
+Rappel avec le modèle multinomial on trouvait
+
+```{r}
+mod<-nnet::multinom(quality~alcohol,data=df)
+predict(mod,newdata=data.frame("alcohol"=10),type="probs")
+```
+
+$\leadsto$ pour cette valeur les probabilités sont proches.
+
+## La régression ordinale en machine learning :
+
+On reprend les mêmes échantillons que ceux construits pour la régression nominale
+
+```{r}
+library(tidymodels)
+set.seed("4485") # pour avoir les mêmes échantillons
+df$ID=1:dim(df)[1]
+choice_split <- group_initial_split(data = df,group=ID,strata=quality)
+
+train_data <- training(choice_split)
+test_data <- testing(choice_split)
+```
+
+### Estimation du modèle sur le training :
+
+On estime le modèle sur l'échantillon d'apprentissage :
+
+```{r}
+mod=MASS::polr(quality~.,data=train_data[,-14])
+train_data$pred=predict(mod)
+train_data|>accuracy(quality,pred)|>
+  gt()
+train_data|>
+  group_by(quality)|>
+  accuracy(quality,pred)|>
+  gt()
+```
+
+On évalue ensuite la qualité de prédiction sur les données de test du modèle précédent :
+
+```{r}
+test_data$pred=predict(mod,newdata = test_data)
+test_data|>accuracy(quality,pred)
+test_data|>
+  group_by(quality)|>
+  accuracy(quality,pred)|>
+  gt()
+```
+
+## Complément : Ordinal vs Nominal  (Test des pentes constantes)
+
+Dans cette partie on va regarder s'il est préférable de 
+faire une régression ordinale ou une régression nominale pour modéliser les données considérées.
+
+On suppose que l'on a $p$ variables explicatives (en comptant les indicatrices des facteurs). On compare le modèle ordinal à pentes constantes au modèle cumulatif **à pentes non constantes** $$\log\left(\frac{\mathbb P(Y\leq k|X)}{1-\mathbb P(Y\leq k|X)}\right)=\alpha_k-\beta_{k1}X_1-\ldots-\beta_{kp}X_p,\quad k=1,\ldots,K-1,$$ et on teste $$H_0 :
+\begin{cases}
+\beta_{11}=...=\beta_{(K-1)1} \\
+\beta_{12}=...=\beta_{(K-1)2} \\
+\vdots \\
+\beta_{1p}=...=\beta_{(K-1)p}
+\end{cases}$$
+
+Pour ce faire on calcule la déviance $D$ du modèle à pentes constantes (droites parallèles) et la déviance $D_0$ du modèle à pentes non constantes, ajustés **avec les mêmes variables explicatives**.
+
+Le modèle à pentes constantes a $(K-1)+p$ paramètres et le modèle à pentes non constantes $(K-1)(p+1)$ : sous $H_0$ on a $D-D_0 \sim \chi^2(p(K-2))$ (approximativement).
+
+Si $p\text{-value}<.05$ on ne retiendra pas le modèle à pentes constantes, c'est-à-dire que l'on privilégiera un modèle à pentes non constantes (ou le modèle nominal) par rapport au modèle ordinal.
+
+***Remarque :*** on compare parfois directement le modèle ordinal (`polr`) au modèle nominal (`multinom`), qui a aussi $(K-1)(p+1)$ paramètres. Ce n'est qu'une comparaison heuristique : les deux modèles ne sont pas emboîtés, donc la loi du $\chi^2$ n'est pas garantie. On peut alors comparer plutôt leurs AIC.
+
+### Sur l'exemple
+
+On utilise le package VGAM, qui permet d'ajuster les deux modèles cumulatifs, avec les variables appelation et alcohol (ici $K=6$ et $p=2$). Avec la paramétrisation `cumulative(reverse=FALSE)`, VGAM modélise $\text{logit}\,\mathbb P(Y\leq k)=\alpha_k+\beta X$ : le signe des pentes est l'opposé de celui de `polr`, mais le test est identique.
+
+```{r warning=F}
+library(VGAM)
+mod_par<-vglm(quality ~ appelation+alcohol, data = df,
+              family = cumulative(parallel = TRUE))
+mod_npar<-vglm(quality ~ appelation+alcohol, data = df,
+               family = cumulative(parallel = FALSE))
+D=deviance(mod_par)
+D0=deviance(mod_npar)
+p=2
+K=length(levels(df$quality))
+print("différence de déviance")
+D-D0
+print("p-value")
+pchisq(D-D0, df = p*(K-2), lower.tail = F)
+```
+
+Remarque : le modèle à pentes non constantes peut produire des probabilités cumulées non monotones (et des avertissements de VGAM) quand certaines modalités sont rares, comme ici mauvais et excellent.
+
+Comparaison heuristique ordinal / nominal par l'AIC (mêmes variables explicatives) :
+
+```{r}
+mod0<-MASS::polr(quality ~ appelation+alcohol, data = df)
+mod<-nnet::multinom(quality ~ appelation+alcohol, data = df, trace = FALSE)
+AIC(mod0)
+AIC(mod)
+```
