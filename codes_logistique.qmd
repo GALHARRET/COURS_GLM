@@ -1,0 +1,236 @@
+---
+title: "Régression logistique : mémo de codes R et Python"
+format:
+  html:
+    toc: true
+    code-copy: true
+execute:
+  warning: false
+  message: false
+---
+
+Données : `data/data_RL.csv` (variable réponse `choice` : 1 = Végan, 0 = Non Végan).
+Le rendu des blocs Python nécessite le package R `reticulate` (ou un rendu avec le moteur Jupyter).
+
+## 1. Import des données
+
+::: panel-tabset
+### R
+
+```{r}
+library(tidyverse); library(gtsummary); library(car)
+data <- read.csv("data/data_RL.csv", row.names = 1)
+data$Choice <- factor(data$choice, levels = c(1, 0), labels = c("Végan", "Non Végan"))
+```
+
+### Python
+
+```{python}
+import numpy as np, pandas as pd
+import statsmodels.formula.api as smf
+from scipy import stats
+data = pd.read_csv("data/data_RL.csv", index_col=0)
+```
+:::
+
+## 2. Une variable explicative binaire (genre)
+
+::: panel-tabset
+### R
+
+```{r}
+chisq.test(table(data$choice, data$gender))           # test du khi-deux
+mod <- glm(choice ~ gender, data = data, family = "binomial")
+summary(mod)
+exp(coef(mod))                                         # cotes / OR
+predict(mod, newdata = data.frame(gender = c("Female", "Male")), type = "response")
+```
+
+### Python
+
+```{python}
+print(stats.chi2_contingency(pd.crosstab(data.choice, data.gender))[:2])
+mod = smf.logit("choice ~ gender", data=data).fit(disp=0)
+print(mod.summary())
+print(np.exp(mod.params))                              # cotes / OR
+print(mod.predict(pd.DataFrame({"gender": ["Female", "Male"]})))
+```
+:::
+
+## 3. Une variable explicative catégorielle (clusters)
+
+Référence : High All (ordre alphabétique).
+
+::: panel-tabset
+### R
+
+```{r}
+mod <- glm(choice ~ clusters, data = data, family = "binomial")
+car::Anova(mod)                                        # test de déviance
+tbl_regression(mod, exponentiate = TRUE)               # OR
+# changer de référence
+mod_LA <- glm(choice ~ relevel(factor(clusters), ref = "Low all"),
+              data = data, family = "binomial")
+```
+
+### Python
+
+```{python}
+mod = smf.logit("choice ~ clusters", data=data).fit(disp=0)
+mod0 = smf.logit("choice ~ 1", data=data).fit(disp=0)
+LR = 2 * (mod.llf - mod0.llf)                          # test de déviance
+print(LR, stats.chi2.sf(LR, df=mod.df_model))
+print(np.exp(pd.concat([mod.params, mod.conf_int()], axis=1)).set_axis(["OR", "IC 2.5%", "IC 97.5%"], axis=1))   # OR + IC
+mod_LA = smf.logit("choice ~ C(clusters, Treatment('Low all'))", data=data).fit(disp=0)
+```
+:::
+
+## 4. Une variable explicative quantitative (âge)
+
+::: panel-tabset
+### R
+
+```{r}
+t.test(age ~ Choice, data = data)
+mod <- glm(choice ~ age, data = data, family = "binomial")
+coef(mod)
+predict(mod, newdata = data.frame(age = 50), type = "response")
+```
+
+### Python
+
+```{python}
+print(stats.ttest_ind(data.age[data.choice == 1], data.age[data.choice == 0], equal_var=False))
+mod = smf.logit("choice ~ age", data=data).fit(disp=0)
+print(mod.params)
+print(mod.predict(pd.DataFrame({"age": [50]})))
+```
+:::
+
+### Courbe ajustée avec intervalle de confiance
+
+::: panel-tabset
+### R
+
+```{r}
+grille <- data.frame(age = seq(min(data$age), max(data$age), by = 0.1))
+pr <- predict(mod, newdata = grille, type = "link", se.fit = TRUE)
+grille <- grille |> mutate(prob  = plogis(pr$fit),
+                           lower = plogis(pr$fit - 1.96 * pr$se.fit),
+                           upper = plogis(pr$fit + 1.96 * pr$se.fit))
+ggplot() +
+  geom_jitter(data = data, aes(age, choice, colour = Choice), height = 0.03, width = 0) +
+  geom_ribbon(data = grille, aes(age, ymin = lower, ymax = upper), alpha = 0.3) +
+  geom_line(data = grille, aes(age, prob)) +
+  labs(y = "Probabilité du choix végan") + theme_bw()
+```
+
+### Python
+
+```{python}
+import matplotlib.pyplot as plt
+from scipy.special import expit
+grille = pd.DataFrame({"age": np.arange(data.age.min(), data.age.max(), 0.1)})
+X = np.column_stack([np.ones(len(grille)), grille.age])
+eta = X @ mod.params.values
+se = np.sqrt(np.einsum("ij,jk,ik->i", X, mod.cov_params().values, X))
+plt.scatter(data.age, data.choice + np.random.uniform(-.03, .03, len(data)), alpha=.5, s=10)
+plt.plot(grille.age, expit(eta))
+plt.fill_between(grille.age, expit(eta - 1.96 * se), expit(eta + 1.96 * se), alpha=.3)
+plt.xlabel("Âge"); plt.ylabel("Probabilité du choix végan"); plt.show()
+```
+:::
+
+## 5. Modèle multivarié
+
+::: panel-tabset
+### R
+
+```{r}
+mod <- glm(choice ~ gender + clusters + age, data = data, family = "binomial")
+car::Anova(mod)                                        # tests de type II
+tbl_regression(mod, exponentiate = TRUE)
+```
+
+### Python
+
+```{python}
+mod = smf.logit("choice ~ gender + clusters + age", data=data).fit(disp=0)
+for v in ["gender", "clusters", "age"]:               # tests de type II (LR)
+    autres = " + ".join(x for x in ["gender", "clusters", "age"] if x != v)
+    m_red = smf.logit(f"choice ~ {autres}", data=data).fit(disp=0)
+    LR = 2 * (mod.llf - m_red.llf)
+    print(v, round(LR, 2), stats.chi2.sf(LR, mod.df_model - m_red.df_model))
+print(np.exp(pd.concat([mod.params, mod.conf_int()], axis=1)).set_axis(["OR", "IC 2.5%", "IC 97.5%"], axis=1))
+```
+:::
+
+## 6. Qualité du modèle : matrice de confusion, sensibilité, spécificité, ROC, AUC
+
+::: panel-tabset
+### R
+
+```{r}
+library(yardstick); library(pROC)
+prob <- predict(mod, type = "response")
+pred <- factor(as.numeric(prob > 0.5), levels = c(1, 0), labels = c("Végan", "Non Végan"))
+df <- data.frame(obs = data$Choice, pred = pred)
+table(df$obs, df$pred)
+accuracy(df, obs, pred); sens(df, obs, pred); spec(df, obs, pred)
+roc_objet <- roc(data$choice, prob)
+plot.roc(roc_objet, legacy.axes = TRUE, print.auc = TRUE)
+auc(roc_objet); ci.auc(roc_objet)
+```
+
+### Python
+
+```{python}
+from sklearn.metrics import (confusion_matrix, accuracy_score, recall_score,
+                             roc_curve, roc_auc_score)
+prob = mod.predict(data)
+pred = (prob > 0.5).astype(int)
+print(confusion_matrix(data.choice, pred))             # lignes = observé (0, 1)
+print(accuracy_score(data.choice, pred),
+      recall_score(data.choice, pred),                 # sensibilité
+      recall_score(data.choice, pred, pos_label=0))    # spécificité
+fpr, tpr, _ = roc_curve(data.choice, prob)
+plt.plot(fpr, tpr); plt.plot([0, 1], [0, 1], "--")
+plt.xlabel("1 - spécificité"); plt.ylabel("sensibilité"); plt.show()
+print("AUC =", roc_auc_score(data.choice, prob))
+```
+:::
+
+## 7. Apprentissage / test
+
+::: panel-tabset
+### R
+
+```{r}
+library(rsample)
+set.seed(4485)
+split <- initial_split(data, prop = 3/4, strata = Choice)
+train_data <- training(split); test_data <- testing(split)
+mod <- glm(choice ~ ., data = train_data |> select(gender:choice), family = "binomial")
+prob <- predict(mod, newdata = test_data, type = "response")
+pred <- factor(as.numeric(prob > 0.5), levels = c(1, 0), labels = c("Végan", "Non Végan"))
+df <- data.frame(obs = test_data$Choice, pred = pred)
+accuracy(df, obs, pred); sens(df, obs, pred); spec(df, obs, pred)
+auc(roc(test_data$choice, prob))
+```
+
+### Python
+
+```{python}
+from sklearn.model_selection import train_test_split
+train, test = train_test_split(data, test_size=0.25, stratify=data.choice, random_state=4485)
+formule = "choice ~ " + " + ".join(data.loc[:, "gender":"clusters"].columns)
+mod = smf.logit(formule, data=train).fit(disp=0)
+prob = mod.predict(test); pred = (prob > 0.5).astype(int)
+print(accuracy_score(test.choice, pred),
+      recall_score(test.choice, pred),
+      recall_score(test.choice, pred, pos_label=0),
+      roc_auc_score(test.choice, prob))
+```
+:::
+
+Remarque : les découpages apprentissage / test de R et de Python ne sont pas identiques (générateurs aléatoires différents), les résultats diffèrent donc légèrement.

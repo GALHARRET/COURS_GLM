@@ -1,0 +1,184 @@
+---
+title: "Régression nominale : mémo de codes R et Python"
+format:
+  html:
+    toc: true
+    code-copy: true
+execute:
+  warning: false
+  message: false
+---
+
+Données : `data/winequality-red.csv` (variable réponse `quality` à 6 modalités, référence = mauvais).
+Le rendu des blocs Python nécessite le package R `reticulate` (ou un rendu avec le moteur Jupyter).
+
+## 1. Import des données
+
+::: panel-tabset
+### R
+
+```{r}
+library(tidyverse); library(gtsummary); library(car); library(nnet)
+niveaux <- c("mauvais", "médiocre", "moyen", "bon", "très bon", "excellent")
+df <- read.csv("data/winequality-red.csv", sep = ";")
+df$quality <- factor(df$quality, levels = niveaux)
+df$appelation <- factor(df$appelation)                 # référence : AOP
+table(df$quality, df$appelation)
+```
+
+### Python
+
+```{python}
+import numpy as np, pandas as pd
+import statsmodels.formula.api as smf
+from scipy import stats
+niveaux = ["mauvais", "médiocre", "moyen", "bon", "très bon", "excellent"]
+df = pd.read_csv("data/winequality-red.csv", sep=";")
+df.columns = df.columns.str.replace(".", "_")        # noms compatibles avec les formules
+df["quality"] = pd.Categorical(df.quality, categories=niveaux, ordered=True)
+df["q"] = df.quality.cat.codes                         # 0 = mauvais (référence)
+print(pd.crosstab(df.quality, df.appelation))
+```
+:::
+
+## 2. Risque relatif à partir de la table de contingence
+
+::: panel-tabset
+### R
+
+```{r}
+library(epitools)
+bon <- factor(ifelse(df$quality == "bon", "bon", "autre"), levels = c("autre", "bon"))
+riskratio(table(relevel(df$appelation, "non AOP"), bon))   # RR AOP / non AOP
+```
+
+### Python
+
+```{python}
+p = pd.crosstab(df.appelation, df.quality == "bon", normalize="index")[True]
+RR = p["AOP"] / p["non AOP"]
+n = pd.crosstab(df.appelation, df.quality == "bon")
+se = np.sqrt(1/n.loc["AOP", True] - 1/n.loc["AOP"].sum()
+             + 1/n.loc["non AOP", True] - 1/n.loc["non AOP"].sum())
+print(RR, np.exp(np.log(RR) + np.array([-1.96, 1.96]) * se))   # RR + IC (Wald)
+```
+:::
+
+## 3. Une variable explicative qualitative (appellation)
+
+::: panel-tabset
+### R
+
+```{r}
+mod <- multinom(quality ~ appelation, data = df, trace = FALSE)
+car::Anova(mod)                                        # test de déviance
+exp(coef(mod))                                         # ORR = exp(beta_k)
+pAOP  <- predict(mod, newdata = data.frame(appelation = "AOP"), type = "probs")
+pNAOP <- predict(mod, newdata = data.frame(appelation = "non AOP"), type = "probs")
+RR <- pNAOP / pAOP                                     # risques relatifs non AOP / AOP
+RR[-1] / RR[1]                                         # on retrouve exp(beta_k)
+```
+
+### Python
+
+```{python}
+mod = smf.mnlogit("q ~ appelation", data=df).fit(disp=0)
+mod0 = smf.mnlogit("q ~ 1", data=df).fit(disp=0)
+LR = 2 * (mod.llf - mod0.llf)                          # test de déviance
+print(LR, stats.chi2.sf(LR, df=mod.df_model - mod0.df_model))
+ORR = np.exp(mod.params); ORR.columns = niveaux[1:]
+print(ORR)                                             # ORR = exp(beta_k)
+pr = mod.predict(pd.DataFrame({"appelation": ["AOP", "non AOP"]}))
+pr.columns = niveaux; pr.index = ["AOP", "non AOP"]
+RR = pr.loc["non AOP"] / pr.loc["AOP"]                 # risques relatifs non AOP / AOP
+print(RR.iloc[1:] / RR.iloc[0])                        # on retrouve exp(beta_k)
+```
+:::
+
+## 4. Une variable explicative quantitative (alcool)
+
+::: panel-tabset
+### R
+
+```{r}
+mod <- multinom(quality ~ alcohol, data = df, trace = FALSE)
+car::Anova(mod)
+exp(coef(mod))                                         # ORR pour +1 degré
+p10 <- predict(mod, newdata = data.frame(alcohol = 10), type = "probs")
+p9  <- predict(mod, newdata = data.frame(alcohol = 9),  type = "probs")
+RR <- p10 / p9; RR[-1] / RR[1]
+```
+
+### Python
+
+```{python}
+mod = smf.mnlogit("q ~ alcohol", data=df).fit(disp=0)
+LR = 2 * (mod.llf - mod0.llf); print(LR, stats.chi2.sf(LR, df=mod.df_model))
+ORR = np.exp(mod.params); ORR.columns = niveaux[1:]; print(ORR)
+pr = mod.predict(pd.DataFrame({"alcohol": [9, 10]})).values
+RR = pr[1] / pr[0]; print(RR[1:] / RR[0])
+```
+:::
+
+## 5. Qualité du modèle : matrice de confusion et % de bien classés
+
+::: panel-tabset
+### R
+
+```{r}
+library(yardstick)
+mod <- multinom(quality ~ appelation + alcohol, data = df, trace = FALSE)
+tab <- data.frame(obs = df$quality, pred = predict(mod))
+table(tab$obs, tab$pred)
+accuracy(tab, obs, pred)                               # % global de bien classés
+tab |> group_by(obs) |> accuracy(obs, pred)            # % de bien classés par modalité
+```
+
+### Python
+
+```{python}
+from sklearn.metrics import confusion_matrix, accuracy_score
+mod = smf.mnlogit("q ~ appelation + alcohol", data=df).fit(disp=0)
+pred = np.asarray(mod.predict(df)).argmax(axis=1)
+cm = confusion_matrix(df.q, pred, labels=range(6))
+print(pd.DataFrame(cm, index=niveaux, columns=niveaux))
+print(accuracy_score(df.q, pred))                      # % global de bien classés
+print(pd.Series(cm.diagonal() / cm.sum(axis=1), index=niveaux))   # par modalité
+```
+:::
+
+## 6. Apprentissage / test
+
+::: panel-tabset
+### R
+
+```{r}
+library(rsample)
+set.seed(4485)
+split <- initial_split(df, prop = 3/4, strata = quality)
+train_data <- training(split); test_data <- testing(split)
+mod <- multinom(quality ~ ., data = train_data, maxit = 1000, trace = FALSE)
+tab <- data.frame(obs = test_data$quality, pred = predict(mod, newdata = test_data))
+accuracy(tab, obs, pred)
+tab |> group_by(obs) |> accuracy(obs, pred)
+```
+
+### Python
+
+```{python}
+from sklearn.model_selection import train_test_split
+train, test = train_test_split(df, test_size=0.25, stratify=df.q, random_state=4485)
+X = [c for c in df.columns if c not in ("quality", "q")]
+formule = "q ~ " + " + ".join(X)
+mod = smf.mnlogit(formule, data=train).fit(method="bfgs", maxiter=5000, disp=0)
+pred = np.asarray(mod.predict(test)).argmax(axis=1)
+cm = confusion_matrix(test.q, pred, labels=range(6))
+print(accuracy_score(test.q, pred))
+print(pd.Series(cm.diagonal() / cm.sum(axis=1), index=niveaux))
+```
+:::
+
+Remarques :
+
+-   les découpages apprentissage / test de R et de Python ne sont pas identiques, les résultats diffèrent donc légèrement ;
+-   les modalités rares (mauvais, excellent) peuvent poser des problèmes de convergence : augmenter `maxit` (R) ou `maxiter` (Python).

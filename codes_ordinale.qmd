@@ -1,0 +1,193 @@
+---
+title: "Régression ordinale : mémo de codes R et Python"
+format:
+  html:
+    toc: true
+    code-copy: true
+execute:
+  warning: false
+  message: false
+---
+
+Données : `data/winequality-red.csv` (variable réponse ordinale `quality` à 6 modalités).
+
+Modèle à cotes proportionnelles : $\text{logit}\,\mathbb P(Y\leq k|X)=\alpha_k-\beta X$. C'est la paramétrisation de `MASS::polr` (R) et de `OrderedModel` (Python).
+
+Le rendu des blocs Python nécessite le package R `reticulate` (ou un rendu avec le moteur Jupyter).
+
+## 1. Import des données et probabilités cumulées
+
+::: panel-tabset
+### R
+
+```{r}
+library(tidyverse); library(car); library(MASS)
+niveaux <- c("mauvais", "médiocre", "moyen", "bon", "très bon", "excellent")
+df <- read.csv("data/winequality-red.csv", sep = ";")
+df$quality <- factor(df$quality, levels = niveaux, ordered = TRUE)
+df$appelation <- factor(df$appelation)                 # référence : AOP
+cumsum(prop.table(table(df$quality)))                  # P(Y <= k)
+```
+
+### Python
+
+```{python}
+import numpy as np, pandas as pd
+from scipy import stats
+from statsmodels.miscmodels.ordinal_model import OrderedModel
+niveaux = ["mauvais", "médiocre", "moyen", "bon", "très bon", "excellent"]
+df = pd.read_csv("data/winequality-red.csv", sep=";")
+df.columns = df.columns.str.replace(".", "_")
+df["quality"] = pd.Categorical(df.quality, categories=niveaux, ordered=True)
+df["nonAOP"] = (df.appelation == "non AOP").astype(float)   # indicatrice, référence AOP
+print(df.quality.value_counts(normalize=True, sort=False).cumsum())   # P(Y <= k)
+```
+:::
+
+## 2. Une variable explicative qualitative (appellation)
+
+::: panel-tabset
+### R
+
+```{r}
+mod0 <- polr(quality ~ appelation, data = df, Hess = TRUE)
+car::Anova(mod0)                                       # test de déviance
+summary(mod0)                                          # beta et seuils alpha_k (zeta)
+exp(coef(mod0))                                        # OR (non AOP / AOP) d'être dans une catégorie supérieure
+pAOP  <- predict(mod0, newdata = data.frame(appelation = "AOP"), type = "probs")
+pNAOP <- predict(mod0, newdata = data.frame(appelation = "non AOP"), type = "probs")
+cote <- function(p, k) sum(p[1:k]) / (1 - sum(p[1:k]))
+cote(pAOP, 4) / cote(pNAOP, 4)                         # OR de P(Y <= bon) = exp(beta)
+```
+
+### Python
+
+```{python}
+mod0 = OrderedModel(df.quality, df[["nonAOP"]], distr="logit").fit(method="bfgs", disp=0)
+print(mod0.summary())
+seuils = mod0.model.transform_threshold_params(mod0.params)[1:-1]   # alpha_1 < ... < alpha_5
+print(pd.Series(seuils, index=[f"{a}|{b}" for a, b in zip(niveaux, niveaux[1:])]))
+print(np.exp(mod0.params["nonAOP"]))                   # OR (non AOP / AOP)
+# test de déviance : comparaison avec le modèle sans variable explicative
+p0 = df.quality.value_counts(normalize=True, sort=False).values
+ll0 = (df.quality.value_counts(sort=False).values * np.log(p0)).sum()
+LR = 2 * (mod0.llf - ll0); print(LR, stats.chi2.sf(LR, df=1))
+pr = np.asarray(mod0.predict(pd.DataFrame({"nonAOP": [0.0, 1.0]})))   # lignes : AOP, non AOP
+cote = lambda p, k: p[:k].sum() / (1 - p[:k].sum())
+print(cote(pr[0], 4) / cote(pr[1], 4))                 # OR de P(Y <= bon) = exp(beta)
+```
+:::
+
+## 3. Une variable explicative quantitative (alcool)
+
+::: panel-tabset
+### R
+
+```{r}
+mod0 <- polr(quality ~ alcohol, data = df, Hess = TRUE)
+car::Anova(mod0)
+exp(coef(mod0))                                        # OR pour +1 degré
+p13 <- predict(mod0, newdata = data.frame(alcohol = 13), type = "probs")
+p14 <- predict(mod0, newdata = data.frame(alcohol = 14), type = "probs")
+cote(p13, 4) / cote(p14, 4)                            # on retrouve exp(beta)
+```
+
+### Python
+
+```{python}
+mod0 = OrderedModel(df.quality, df[["alcohol"]], distr="logit").fit(method="bfgs", disp=0)
+LR = 2 * (mod0.llf - ll0); print(LR, stats.chi2.sf(LR, df=1))
+print(np.exp(mod0.params["alcohol"]))                  # OR pour +1 degré
+pr = np.asarray(mod0.predict(pd.DataFrame({"alcohol": [13.0, 14.0]})))
+print(cote(pr[0], 4) / cote(pr[1], 4))                 # on retrouve exp(beta)
+```
+:::
+
+## 4. Ordinal vs nominal : probabilités prédites
+
+::: panel-tabset
+### R
+
+```{r}
+predict(mod0, newdata = data.frame(alcohol = 10), type = "probs")
+mod <- nnet::multinom(quality ~ alcohol, data = df, trace = FALSE)
+predict(mod, newdata = data.frame(alcohol = 10), type = "probs")
+```
+
+### Python
+
+```{python}
+import statsmodels.formula.api as smf
+df["q"] = df.quality.cat.codes
+print(pd.DataFrame(np.asarray(mod0.predict(pd.DataFrame({"alcohol": [10.0]}))), columns=niveaux))
+mod = smf.mnlogit("q ~ alcohol", data=df).fit(disp=0)
+print(pd.DataFrame(np.asarray(mod.predict(pd.DataFrame({"alcohol": [10.0]}))), columns=niveaux))
+```
+:::
+
+## 5. Qualité du modèle et apprentissage / test
+
+::: panel-tabset
+### R
+
+```{r}
+library(rsample); library(yardstick)
+set.seed(4485)
+split <- initial_split(df, prop = 3/4, strata = quality)
+train_data <- training(split); test_data <- testing(split)
+mod <- polr(quality ~ ., data = train_data, Hess = TRUE)
+tab <- data.frame(obs = test_data$quality, pred = predict(mod, newdata = test_data))
+accuracy(tab, obs, pred)
+tab |> group_by(obs) |> accuracy(obs, pred)            # % de bien classés par modalité
+```
+
+### Python
+
+```{python}
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import confusion_matrix, accuracy_score
+train, test = train_test_split(df, test_size=0.25, stratify=df.q, random_state=4485)
+X = pd.get_dummies(df.drop(columns=["quality", "q", "nonAOP"]),
+                   drop_first=True, dtype=float)       # appelation -> indicatrice
+mod = OrderedModel(train.quality, X.loc[train.index], distr="logit").fit(
+    method="bfgs", maxiter=5000, disp=0)
+pred = np.asarray(mod.predict(X.loc[test.index])).argmax(axis=1)
+cm = confusion_matrix(test.q, pred, labels=range(6))
+print(accuracy_score(test.q, pred))
+print(pd.Series(cm.diagonal() / cm.sum(axis=1), index=niveaux))
+```
+:::
+
+## 6. Test des pentes constantes
+
+$H_0$ : les pentes sont les mêmes pour tous les seuils. Sous $H_0$, $D-D_0\sim\chi^2(p(K-2))$, où $D$ est la déviance du modèle à pentes constantes et $D_0$ celle du modèle à pentes non constantes ($p$ = nombre de variables explicatives, $K$ = nombre de modalités).
+
+::: panel-tabset
+### R
+
+```{r}
+library(VGAM)
+m_par  <- vglm(quality ~ appelation + alcohol, data = df, family = cumulative(parallel = TRUE))
+m_npar <- vglm(quality ~ appelation + alcohol, data = df, family = cumulative(parallel = FALSE))
+LR <- deviance(m_par) - deviance(m_npar)
+pchisq(LR, df = 2 * (6 - 2), lower.tail = FALSE)
+# comparaison heuristique ordinal / nominal (modèles non emboîtés) :
+AIC(polr(quality ~ appelation + alcohol, data = df))
+AIC(nnet::multinom(quality ~ appelation + alcohol, data = df, trace = FALSE))
+```
+
+### Python
+
+```{python}
+# statsmodels ne propose pas de modèle cumulatif à pentes non constantes :
+# on se limite à la comparaison heuristique ordinal / nominal par l'AIC.
+m_ord = OrderedModel(df.quality, df[["nonAOP", "alcohol"]], distr="logit").fit(method="bfgs", disp=0)
+m_nom = smf.mnlogit("q ~ nonAOP + alcohol", data=df).fit(disp=0)
+print("AIC ordinal :", m_ord.aic, " AIC nominal :", m_nom.aic)
+```
+:::
+
+Remarques :
+
+-   le test formel des pentes constantes n'est disponible ici qu'en R (package `VGAM`) ;
+-   les découpages apprentissage / test de R et de Python ne sont pas identiques, les résultats diffèrent donc légèrement.
