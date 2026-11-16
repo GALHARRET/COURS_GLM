@@ -9,8 +9,7 @@ execute:
   message: false
 ---
 
-Données : `data/winequality-red.csv` (variable réponse `quality` à 6 modalités, référence = mauvais).
-Le rendu des blocs Python nécessite le package R `reticulate` (ou un rendu avec le moteur Jupyter).
+Données : `data/winequality-red.csv` (variable réponse `quality` à 6 modalités, référence = mauvais). Le rendu des blocs Python nécessite le package R `reticulate` (ou un rendu avec le moteur Jupyter).
 
 ## 1. Import des données
 
